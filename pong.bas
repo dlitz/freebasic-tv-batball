@@ -32,8 +32,13 @@ DECLARE SUB MoveBall ()
 DECLARE SUB WallSound ()
 DECLARE SUB ScoreSound ()
 DECLARE SUB ClearBall ()
+DECLARE SUB SOUND (freq AS SINGLE, dur AS SINGLE)
+DECLARE SUB InitSound ()
 ' ********************
 ' History:
+' **********
+' 1.1.0 - Fri, 02 Dec 2005
+'       - Ported from QuickBASIC to FreeBASIC
 ' **********
 ' 1.0.3  - Increased Rate range.
 ' **********
@@ -72,6 +77,8 @@ DECLARE SUB ClearBall ()
 '        - Fixed a retarded bug in handball(GM3) that caused the ball to not
 '          bounce properly
 ' ********************
+'$include: "SDL\SDL.bi"
+'$include: "SDL\SDL_audio.bi"
 
 DEFINT A-Z
 CONST True = -1
@@ -102,8 +109,6 @@ DIM SHARED NormalVelY AS SINGLE
 DIM SHARED BigVelX AS SINGLE
 DIM SHARED BigVelY AS SINGLE
 DIM SHARED LastBallX AS SINGLE, LastBallY AS SINGLE
-DIM SHARED LoopsPerSecond AS LONG
-DIM SHARED DrawsPerSecond AS LONG
 DIM SHARED BallX AS SINGLE, BallY AS SINGLE, BallVisible AS INTEGER, BallType AS INTEGER
 DIM SHARED Velocity AS SINGLE, VelX AS SINGLE, VelY AS SINGLE
 DIM SHARED GameMode
@@ -143,12 +148,11 @@ BigVelY = .9
 
 SoundEnabled = True
 HelpShown = False
-RANDOMIZE TIMER
 SCREEN 0
 CLS
 COLOR 9
-PRINT "PONG v1.0.3"
-PRINT "Copyright (c) 1998-2000, Dwayne Litzenberger"
+PRINT "PONG v1.1.0"
+PRINT "Copyright (c) 1998-2005, Dwayne Litzenberger"
 PRINT
 COLOR 4
 PRINT "This program is free software; you can redistribute it and/or modify"
@@ -167,18 +171,12 @@ PRINT "Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 PRINT "or, see http://www.fsf.org/copyleft/gpl.html"
 PRINT
 COLOR 7
-PRINT "- Press any key - "
-WHILE INKEY$ = "": WEND
 SCREEN 7
 COLOR 7
 CLS
-PRINT "Calculating delay loop...";
-CALL CalcDelayLoop
+PRINT "Initializing sound system...";
+CALL InitSound
 PRINT "done"
-PRINT "Calculating drawing speed...";
-CALL CalcDrawSpeed
-PRINT "done"
-SLEEP 4
 COLOR 15
 CLS
 GamePaused = False
@@ -191,7 +189,7 @@ Paddle(0) = ScrHeight / 2 - 1
 Paddle(1) = ScrHeight / 2 - 1
 CALL InitGame
 t# = TIMER
-WHILE 1         ' Infinite loop
+WHILE 1
  IF (NOT GamePaused) AND (NOT HelpShown) THEN CALL MoveBall
  IF (NOT GamePaused) AND (NOT HelpShown) THEN Delay .003 / Velocity
  CALL ParseKeys
@@ -322,30 +320,6 @@ DATA " XX"
 DATA "  X"
 DATA "  X"
 
-SUB CalcDelayLoop
- t# = TIMER
- tt& = 0
- WHILE TIMER - t# < LoopAccuracy
-  tt& = tt& + 1
- WEND
- LoopsPerSecond = tt& / LoopAccuracy
-END SUB
-
-SUB CalcDrawSpeed
- t# = TIMER
- tt& = 0
- WHILE TIMER - t# < LoopAccuracy
-  LINE (50, 50)-(90, 90), 0, BF
-  tt& = tt& + 1
- WEND
- DrawsPerSecond = tt& / LoopAccuracy
- Multiplier! = 30 * (170 / tt&)
- NormalVelX = NormalVelX * Multiplier!
- NormalVelY = NormalVelY * Multiplier!
- BigVelX = BigVelX * Multiplier!
- BigVelY = BigVelY * Multiplier!
-END SUB
-
 SUB ClearBall
  IF BallVisible THEN
   xx = LastBallX - BallSize / 2: yy = LastBallY - BallSize / 2
@@ -360,11 +334,7 @@ SUB ClearBall
 END SUB
 
 SUB Delay (length#)
- tt& = 0
- WHILE (length# * LoopsPerSecond) > tt&
-  dummy# = TIMER
-  tt& = tt& + 1
- WEND
+ SLEEP length# * 1000
 END SUB
 
 SUB DottedLineX (x1, x2, y)
@@ -469,7 +439,6 @@ SUB DrawScreen
 END SUB
 
 SUB ExitProggy
-SCREEN 2
 SCREEN 0
 COLOR 7, 0
 CLS
@@ -477,7 +446,6 @@ COLOR 9, 0
 PRINT "Thank you for playing PONG!"
 PRINT "Have a nice day!"
 COLOR 7, 0
-Delay 1.5
 END
 
 END SUB
@@ -680,9 +648,6 @@ LOCATE , 5: PRINT USING "MaxScore = ##"; MaxScore
 END SUB
 
 SUB InitGame
- DEF SEG = 0
- POKE 1047, PEEK(1047) OR 32
- DEF SEG
  CALL GameConstants
  SELECT CASE GameMode
   CASE 1, 2, 3, 4
@@ -1006,3 +971,49 @@ SUB WallSound
  IF SoundEnabled THEN SOUND 500, .3
 END SUB
 
+'*****************************
+'* Implementation of the SOUND function for FreeBASIC, which doesn't have
+'* native support for it.
+'*****************************
+
+DIM SHARED sndHalfPeriod AS SINGLE
+DIM SHARED sndSamplesLeft AS SINGLE
+DIM SHARED sndShortSamplesLeft AS SINGLE
+DIM SHARED sndSampleLevel AS INTEGER
+
+SUB SoundCallback(byval userdata as any ptr, byval stream as Uint8 ptr, byval length as integer)
+ IF sndSamplesLeft < length THEN length = sndSamplesLeft
+ FOR i = 1 to length
+  *(stream+i) = sndSampleLevel
+  sndShortSamplesLeft = sndShortSamplesLeft - 1
+  IF sndShortSamplesLeft <= 0 THEN
+   sndShortSamplesLeft = sndShortSamples + sndHalfPeriod
+   sndSampleLevel = 255 - sndSampleLevel
+  END IF
+ NEXT
+ sndSamplesLeft = sndSamplesLeft - length
+ IF sndSamplesLeft <= 0 THEN
+  SDL_PauseAudio(1)
+ END IF
+END SUB
+
+SUB InitSound
+ DIM audiospec AS SDL_AudioSpec
+ SDL_Init(SDL_INIT_AUDIO OR SDL_INIT_TIMER)
+ audiospec.freq = 8000
+ audiospec.format = AUDIO_S8
+ audiospec.channels = 1
+ audiospec.samples = 128
+ audiospec.callback = @SoundCallback
+ audiospec.userdata = 0
+ SDL_OpenAudio(@audiospec, @audiospec)
+END SUB
+
+SUB SOUND (freq AS SINGLE, dur AS SINGLE)
+ sampleFreq = 8000
+ sndSamplesLeft = 1.0 * sampleFreq * dur / 18.2
+ sndHalfPeriod = 1.0 * sampleFreq / freq / 2.0
+ sndSampleLevel = 255
+ sndShortSamplesLeft = sndHalfPeriod
+ SDL_PauseAudio(0)
+END SUB
