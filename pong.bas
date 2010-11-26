@@ -32,10 +32,23 @@ DECLARE SUB MoveBall ()
 DECLARE SUB WallSound ()
 DECLARE SUB ScoreSound ()
 DECLARE SUB ClearBall ()
-DECLARE SUB SOUND (freq AS SINGLE, dur AS SINGLE)
+DECLARE SUB PlaySound (freq AS SINGLE, dur AS SINGLE)
 DECLARE SUB InitSound ()
+DECLARE SUB CleanupSound ()
 ' ********************
 ' History:
+' **********
+' 1.1.1 - Wed, 14 Dec 2005
+'       - Add 'cdecl' tag to SoundCallback, fixing a warning and crash on win32.
+'       - Add "Press <H> for help" to the beginning credits.
+'       - Make Delay() use SDL_Delay() instead of SLEEP.
+'       - Fix my idiotic off-by-one error in SoundCallback.
+'       - Add CleanupSound
+'       - Replace SOUND with PlaySound, and make PlaySound check the new
+'         SoundEnabled and SoundInitialized variables
+'       - Replace "x = True - x" with "x = NOT x" in various places
+'       - Improve the help screen
+'       - Replace non-ASCII characters in source code with CHR$() et al.
 ' **********
 ' 1.1.0 - Fri, 02 Dec 2005
 '       - Ported from QuickBASIC to FreeBASIC
@@ -79,6 +92,7 @@ DECLARE SUB InitSound ()
 ' ********************
 '$include: "SDL\SDL.bi"
 '$include: "SDL\SDL_audio.bi"
+'$include: "SDL\SDL_timer.bi"
 
 DEFINT A-Z
 CONST True = -1
@@ -102,6 +116,8 @@ CONST planes = 4
 CONST ScrWidth = 320
 CONST ScrHeight = 200
 CONST ScrMax = 108
+CONST MinVelocity = .2
+CONST MaxVelocity = 3
 
 BallArrayBytes = 4 + INT(((BallSize - 0 + 1) * (bitsperpixelperplane) + 7) / 8) * planes * ((BallSize - 0) + 1)
 DIM SHARED NormalVelX AS SINGLE
@@ -118,6 +134,7 @@ DIM SHARED Paddle(1), PaddleX(1), PaddleX2(1), PaddleSize, PaddleJump, JustInAPa
 DIM SHARED BounceMode
 DIM SHARED GamePaused AS INTEGER, HelpShown AS INTEGER
 DIM SHARED FontType AS INTEGER
+DIM SHARED SoundInitialized AS INTEGER
 DIM SHARED SoundEnabled AS INTEGER
 DIM SHARED MaxScore AS INTEGER
 
@@ -147,11 +164,12 @@ BigVelX = .6
 BigVelY = .9
 
 SoundEnabled = True
+SoundInitialized = False
 HelpShown = False
 SCREEN 0
 CLS
 COLOR 9
-PRINT "PONG v1.1.0"
+PRINT "PONG v1.1.1"
 PRINT "Copyright (c) 1998-2005, Dwayne Litzenberger"
 PRINT
 COLOR 4
@@ -174,9 +192,14 @@ COLOR 7
 SCREEN 7
 COLOR 7
 CLS
+PRINT "Initializing timer...";
+CALL SDL_Init(SDL_INIT_TIMER)
+PRINT "done"
 PRINT "Initializing sound system...";
 CALL InitSound
 PRINT "done"
+PRINT "Press <H> for help."
+Delay 1
 COLOR 15
 CLS
 GamePaused = False
@@ -191,7 +214,7 @@ CALL InitGame
 t# = TIMER
 WHILE 1
  IF (NOT GamePaused) AND (NOT HelpShown) THEN CALL MoveBall
- IF (NOT GamePaused) AND (NOT HelpShown) THEN Delay .003 / Velocity
+ IF (NOT GamePaused) AND (NOT HelpShown) THEN Delay .003 ' / Velocity
  CALL ParseKeys
  IF (NOT GamePaused) AND (NOT HelpShown) AND (TIMER - t# > 3) THEN CALL DrawScores: t# = TIMER     'Do a bit of screen refresh every few seconds
 WEND
@@ -324,17 +347,14 @@ SUB ClearBall
  IF BallVisible THEN
   xx = LastBallX - BallSize / 2: yy = LastBallY - BallSize / 2
   IF xx >= 0 AND yy >= 0 THEN
-'  IF xx >= 0 AND yy >= 0 AND xx <= ScrWidth - 1 - BallSize AND yy <= ScrHeight - 1 - BallSize THEN
    IF xx <= ScrWidth - 1 AND yy <= ScrHeight - 1 THEN PUT (xx, yy), BallArray, PSET
-'  ELSEIF xx >= 0 AND yy >= 0 THEN
-   'LINE (xx, yy)-STEP(BallSize, BallSize), 0, BF
   END IF
  END IF
  BallVisible = False
 END SUB
 
 SUB Delay (length#)
- SLEEP length# * 1000
+ SDL_Delay(length# * 1000)
 END SUB
 
 SUB DottedLineX (x1, x2, y)
@@ -400,9 +420,9 @@ SUB DrawLines
 END SUB
 
 SUB DrawPaddle (x%, y%)
-        LINE (x% - LineSize / 2, 0)-STEP(LineSize, ScrHeight), 0, BF
-        LINE (x% - LineSize / 2, y% - PaddleSize / 2)-STEP(LineSize, PaddleSize), 15, BF
-        CALL DrawLines
+ LINE (x% - LineSize / 2, 0)-STEP(LineSize, ScrHeight), 0, BF
+ LINE (x% - LineSize / 2, y% - PaddleSize / 2)-STEP(LineSize, PaddleSize), 15, BF
+ CALL DrawLines
 END SUB
 
 SUB DrawPaddles
@@ -439,15 +459,16 @@ SUB DrawScreen
 END SUB
 
 SUB ExitProggy
-SCREEN 0
-COLOR 7, 0
-CLS
-COLOR 9, 0
-PRINT "Thank you for playing PONG!"
-PRINT "Have a nice day!"
-COLOR 7, 0
-END
-
+ SCREEN 0
+ COLOR 7, 0
+ CLS
+ COLOR 9, 0
+ PRINT "Thank you for playing PONG!"
+ PRINT "Have a nice day!"
+ COLOR 7, 0
+ CALL CleanupSound
+ CALL SDL_QuitSubSystem(SDL_INIT_TIMER)
+ END
 END SUB
 
 SUB FixBounceMode
@@ -539,12 +560,14 @@ END SUB
 
 SUB HelpDisplay
  LOCATE 1, 2
- PRINT "ÕÍÍÍÍÍÍÍÍÍÍµKeyboard HelpÆÍÍÍÍÍÍÍÍÍÍÍ¸"
+ PRINT CHR$(213); STRING$(10, 205); 
+ PRINT CHR$(181); "Keyboard Help"; CHR$(198);
+ PRINT STRING$(11, 205); CHR$(184)
  FOR i = 2 TO 23
   LOCATE i, 2
-  PRINT "³"; SPACE$(36); "³"
+  PRINT CHR$(179); SPACE$(36); CHR$(179)
  NEXT
- LOCATE , 2: PRINT "À"; STRING$(36, "Ä"); "Ù";
+ LOCATE , 2: PRINT CHR$(192); STRING$(36, 196); CHR$(217);
 
  LOCATE 2, 1
  LOCATE , 4: PRINT "(A) Left Paddle Up"
@@ -586,22 +609,22 @@ LOCATE , 3: PRINT STRING$(37, "*")
 LOCATE 8, 1
 
 LOCATE , 5: PRINT "PONG"
-LOCATE , 5: PRINT "(c) 1998-2000, Dwayne Litzenberger"
+LOCATE , 5: PRINT "by Dwayne Litzenberger"
 LOCATE , 4: PRINT STRING$(35, "*")
 
-LOCATE , 5: PRINT "GameMode = ";
+LOCATE , 5: PRINT "(G)ameMode = ";
 SELECT CASE GameMode
  CASE 1
   PRINT "Table Tennis"
  CASE 2
-  PRINT "Handball - One Player"
+  PRINT "Handball - 1 Player"
  CASE 3
-  PRINT "Handball - Two Players"
+  PRINT "Handball - 2 Players"
  CASE 4
   PRINT "Hockey"
 END SELECT
 
-LOCATE , 5: PRINT "BounceMode = ";
+LOCATE , 5: PRINT "(B)ounceMode = ";
 SELECT CASE BounceMode
  CASE 0
   PRINT "Simple"
@@ -609,9 +632,9 @@ SELECT CASE BounceMode
   PRINT "Advanced"
 END SELECT
 
-LOCATE , 5: PRINT USING "BallRate = #.#"; Velocity
+LOCATE , 5: PRINT USING "Ball(R)ate = #.# (Rng: #.# to #.#)"; Velocity; MinVelocity; MaxVelocity
 
-LOCATE , 5: PRINT "BallType = ";
+LOCATE , 5: PRINT "Ball(T)ype = ";
 SELECT CASE BallType
  CASE 0
   PRINT "Classic"
@@ -627,7 +650,7 @@ SELECT CASE BallType
   PRINT "Triangle Outline"
 END SELECT
 
-LOCATE , 5: PRINT "Font = ";
+LOCATE , 5: PRINT "(F)ont = ";
 SELECT CASE FontType
  CASE 0
   PRINT "Original"
@@ -635,7 +658,7 @@ SELECT CASE FontType
   PRINT "Alternate"
 END SELECT
 
-LOCATE , 5: PRINT "Sound = ";
+LOCATE , 5: PRINT "S(o)und = ";
 SELECT CASE SoundEnabled
  CASE True
   PRINT "On"
@@ -643,7 +666,7 @@ SELECT CASE SoundEnabled
   PRINT "Muted"
 END SELECT
 
-LOCATE , 5: PRINT USING "MaxScore = ##"; MaxScore
+LOCATE , 5: PRINT USING "(M)axScore = ##"; MaxScore
 
 END SUB
 
@@ -671,7 +694,7 @@ SUB MoveBall
 END SUB
 
 SUB PaddleSound
- IF SoundEnabled THEN SOUND 750, .3
+ PlaySound 750, .3
 END SUB
 
 SUB ParseKeys
@@ -685,47 +708,51 @@ SUB ParseKeys
    CASE CHR$(32)
     CALL ResetButton
    CASE "G"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     GameMode = GameMode + 1
     IF GameMode > 4 THEN GameMode = 1
     CALL GameConstants: CLS : CALL DrawScreen
    CASE "B"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     BounceMode = BounceMode + 1
     IF BounceMode > 1 THEN BounceMode = 0
     CALL FixBounceMode
    CASE "R"
-    IF SoundEnabled THEN SOUND 2000, .1
-    Velocity = Velocity + .2
-    IF Velocity > 3 THEN Velocity = .2
+    PlaySound 2000, .1
+    IF Velocity < MaxVelocity THEN
+     Velocity = Velocity + .2
+     IF Velocity > MaxVelocity THEN Velocity = MaxVelocity
+    ELSE
+     Velocity = MinVelocity
+    END IF
    CASE "T"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     BallType = BallType + 1
     IF BallType > 5 THEN BallType = 0
    CASE "F"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     FontType = FontType + 1
     IF FontType > 1 THEN FontType = 0
     CALL DrawScores
    CASE "M"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     MaxScore = MaxScore + 1
     IF MaxScore > 30 THEN MaxScore = 1
    CASE "P"
-    IF SoundEnabled THEN SOUND 1200, 1: SOUND 600, 1
+    PlaySound 1200, 1: PlaySound 600, 1
     IF GamePaused THEN
      CLS : CALL DrawScreen
     END IF
-    GamePaused = True - GamePaused  'Reverse Pause status
+    GamePaused = NOT GamePaused  'Reverse Pause status
    CASE "H"
-    IF SoundEnabled THEN SOUND 2000, .1
+    PlaySound 2000, .1
     IF HelpShown THEN
      CLS : CALL DrawScreen
     END IF
-    HelpShown = True - HelpShown
+    HelpShown = NOT HelpShown
    CASE "O"
-    SoundEnabled = True - SoundEnabled
-    IF SoundEnabled THEN SOUND 2000, .1
+    SoundEnabled = NOT SoundEnabled
+    PlaySound 2000, .1
   END SELECT
   SELECT CASE GameMode
    CASE 1, 2, 3, 4
@@ -964,11 +991,11 @@ SUB ScorePoint
 END SUB
 
 SUB ScoreSound
- IF SoundEnabled THEN SOUND 1000, .3
+ PlaySound 1000, .3
 END SUB
 
 SUB WallSound
- IF SoundEnabled THEN SOUND 500, .3
+ PlaySound 500, .3
 END SUB
 
 '*****************************
@@ -981,9 +1008,9 @@ DIM SHARED sndSamplesLeft AS SINGLE
 DIM SHARED sndShortSamplesLeft AS SINGLE
 DIM SHARED sndSampleLevel AS INTEGER
 
-SUB SoundCallback(byval userdata as any ptr, byval stream as Uint8 ptr, byval length as integer)
+SUB SoundCallback cdecl(byval userdata as any ptr, byval stream as Uint8 ptr, byval length as integer)
  IF sndSamplesLeft < length THEN length = sndSamplesLeft
- FOR i = 1 to length
+ FOR i = 0 to length-1
   *(stream+i) = sndSampleLevel
   sndShortSamplesLeft = sndShortSamplesLeft - 1
   IF sndShortSamplesLeft <= 0 THEN
@@ -992,28 +1019,41 @@ SUB SoundCallback(byval userdata as any ptr, byval stream as Uint8 ptr, byval le
   END IF
  NEXT
  sndSamplesLeft = sndSamplesLeft - length
- IF sndSamplesLeft <= 0 THEN
-  SDL_PauseAudio(1)
- END IF
+ IF sndSamplesLeft <= 0 THEN CALL SDL_PauseAudio(1)
 END SUB
 
 SUB InitSound
  DIM audiospec AS SDL_AudioSpec
- SDL_Init(SDL_INIT_AUDIO OR SDL_INIT_TIMER)
+ SoundInitialized = False
+ IF SDL_InitSubSystem(SDL_INIT_AUDIO) <> 0 THEN EXIT SUB
  audiospec.freq = 8000
  audiospec.format = AUDIO_S8
  audiospec.channels = 1
- audiospec.samples = 128
+ audiospec.samples = 512
  audiospec.callback = @SoundCallback
  audiospec.userdata = 0
- SDL_OpenAudio(@audiospec, @audiospec)
+ IF SDL_OpenAudio(@audiospec, @audiospec) <> 0 THEN EXIT SUB
+ SoundInitialized = True
 END SUB
 
-SUB SOUND (freq AS SINGLE, dur AS SINGLE)
+SUB CleanupSound
+ IF SoundInitialized = False THEN EXIT SUB
+ CALL SDL_LockAudio()
+ CALL SDL_CloseAudio()
+ CALL SDL_QuitSubSystem(SDL_INIT_AUDIO)
+END SUB
+
+SUB PlaySound (freq AS SINGLE, dur AS SINGLE)
+ IF SoundInitialized = False OR SoundEnabled = False THEN EXIT SUB
+ IF dur = 0 THEN
+  sndSamplesLeft = 0
+  sndShortSamplesLeft = 0
+  EXIT SUB
+ END IF
  sampleFreq = 8000
  sndSamplesLeft = 1.0 * sampleFreq * dur / 18.2
  sndHalfPeriod = 1.0 * sampleFreq / freq / 2.0
  sndSampleLevel = 255
  sndShortSamplesLeft = sndHalfPeriod
- SDL_PauseAudio(0)
+ CALL SDL_PauseAudio(0)
 END SUB
